@@ -163,6 +163,18 @@ jobs:
         working-directory: frontend
         run: npm test -- --runInBand
 
+  test-contracts:
+    name: Governance contract tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Run contract tests
+        run: cargo test --workspace
+
   build:
     name: Build
     runs-on: ubuntu-latest
@@ -265,7 +277,17 @@ jobs:
   quality-gate:
     name: Quality gate
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test-backend, test-frontend, build, docker-build, commitlint]
+    needs:
+      [
+        lint,
+        typecheck,
+        test-backend,
+        test-frontend,
+        test-contracts,
+        build,
+        docker-build,
+        commitlint,
+      ]
     if: always()
     steps:
       - name: Fail if any required job failed
