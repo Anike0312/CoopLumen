@@ -163,6 +163,49 @@ jobs:
         working-directory: frontend
         run: npm test -- --runInBand
 
+  test-governance-e2e:
+    name: Governance browser flow
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Playwright
+        working-directory: frontend
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Start the Docker Compose stack
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml up -d --build --wait
+
+      - name: Run database migrations
+        run: >-
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml
+          exec -T -e DATABASE_URL=postgresql://cooplumen:cooplumen@db:5432/cooplumen
+          backend npm run db:migrate
+
+      - name: Run governance browser test
+        working-directory: frontend
+        env:
+          AUTH_SESSION_SECRET: governance-e2e-secret
+          PLAYWRIGHT_BASE_URL: http://localhost:3000
+          PLAYWRIGHT_API_URL: http://localhost:4000
+        run: npm run test:e2e
+
+      - name: Print service logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color
+
+      - name: Stop the Docker Compose stack
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml down -v
+
   build:
     name: Build
     runs-on: ubuntu-latest
@@ -265,7 +308,17 @@ jobs:
   quality-gate:
     name: Quality gate
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test-backend, test-frontend, build, docker-build, commitlint]
+    needs:
+      [
+        lint,
+        typecheck,
+        test-backend,
+        test-frontend,
+        test-governance-e2e,
+        build,
+        docker-build,
+        commitlint,
+      ]
     if: always()
     steps:
       - name: Fail if any required job failed

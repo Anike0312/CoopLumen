@@ -1,0 +1,10 @@
+services:
+  backend:
+    build:
+      target: dev
+    environment:
+      AUTH_SESSION_SECRET: governance-e2e-secret
+
+  frontend:
+    build:
+      target: dev
