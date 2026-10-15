@@ -14,6 +14,7 @@ import { accountsRouter } from './accounts';
 import { multisigRouter } from './multisig';
 import { batchRouter } from './batch';
 import { streamRouter } from './stream';
+import { proposalRouter } from './proposals';
 
 /**
  * Combined API router. Mounted under the `/api/v1` version prefix in app.ts so
@@ -37,3 +38,4 @@ apiRouter.use('/accounts', accountsRouter);
 apiRouter.use('/multisig', multisigRouter);
 apiRouter.use('/batch', batchRouter);
 apiRouter.use('/stream', streamRouter);
+apiRouter.use('/proposals', proposalRouter);
