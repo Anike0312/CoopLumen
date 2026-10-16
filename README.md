@@ -271,6 +271,7 @@ cd frontend && npm test
 - [Contributing Guide](CONTRIBUTING.md) — branch model, conventions, code review
 - [Governance Guide](docs/governance.md) - Soroban proposals, token-weighted voting, quorum, and execution
 - [Multi-Signature & Batch Operations Guide](docs/multisig.md) — multi-sig treasury governance, signing lifecycle, batch payments
+- [SEP-12 KYC Requirements](docs/kyc.md) — provider integration, status mapping, privacy, and security requirements
 
 ## Community
 

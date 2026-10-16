@@ -40,10 +40,131 @@ tags:
     description: Batch payment disbursement, preview, and CSV parsing endpoints
   - name: Stream
     description: Server-Sent Events feeds of live account activity
+  - name: Proposals
+    description: Governance proposal creation and read models
+  - name: KYC
+    description: Account identity verification flows
   - name: Auth
     description: Wallet sign-in (challenge, signature, session cookie)
 
 paths:
+  /api/v1/proposals:
+    get:
+      tags: [Proposals]
+      summary: List proposals for a community
+      parameters:
+        - name: communityId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [draft, active, passed, rejected, executed, cancelled]
+      responses:
+        '200':
+          description: Community proposals with current database tallies
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/GovernanceProposal' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+    post:
+      tags: [Proposals]
+      summary: Create a proposal
+      description: Creates the database read model for an authenticated active community member.
+      security:
+        - SessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateGovernanceProposal' }
+      responses:
+        '201':
+          description: Proposal created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/GovernanceProposal' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '403':
+          description: Caller is not an active member of the community
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/v1/proposals/{id}:
+    get:
+      tags: [Proposals]
+      summary: Get proposal detail and current tally
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Proposal detail
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/GovernanceProposal' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/kyc/initiate:
+    post:
+      tags: [KYC]
+      summary: Start or resume KYC verification
+      description: Starts a pending KYC flow for the authenticated member's own address. Pending and submitted flows are idempotent; rejected or expired flows are restarted.
+      security:
+        - SessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InitiateKycRequest' }
+      responses:
+        '200':
+          description: An existing pending flow was returned
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InitiateKycResponse' }
+        '201':
+          description: A new or restarted pending flow was created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InitiateKycResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '403':
+          description: Address mismatch or inactive community membership
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '409':
+          description: Address is already verified
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
   /api/v1/auth/logout:
     post:
       tags: [Auth]
@@ -1397,6 +1518,66 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
   schemas:
+    CreateGovernanceProposal:
+      type: object
+      required: [communityId, title, votingEndsAt]
+      properties:
+        communityId: { type: string, format: uuid }
+        title: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, maxLength: 10000 }
+        type:
+          type: string
+          enum:
+            [
+              general,
+              loan_approval,
+              member_removal,
+              treasury_spend,
+              settings_change,
+              token_issuance,
+            ]
+          default: general
+        quorumPercent: { type: number, minimum: 0, maximum: 100, default: 50 }
+        metadata: { type: object, additionalProperties: true }
+        votingEndsAt: { type: string, format: date-time }
+    GovernanceProposal:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        community_id: { type: string, format: uuid }
+        proposer_address: { $ref: '#/components/schemas/StellarKey' }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        type: { type: string }
+        status: { type: string }
+        quorum_percent: { type: string }
+        metadata: { type: object, nullable: true, additionalProperties: true }
+        voting_starts_at: { type: string, format: date-time }
+        voting_ends_at: { type: string, format: date-time }
+        votes_for: { type: string }
+        votes_against: { type: string }
+        votes_abstain: { type: string }
+    InitiateKycRequest:
+      type: object
+      required: [communityId, address]
+      properties:
+        communityId: { type: string, format: uuid }
+        address: { $ref: '#/components/schemas/StellarKey' }
+        provider: { type: string, default: sep12, maxLength: 100 }
+    InitiateKycResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [id, communityId, address, status, provider, initiatedAt]
+          properties:
+            id: { type: string, format: uuid }
+            communityId: { type: string, format: uuid }
+            address: { $ref: '#/components/schemas/StellarKey' }
+            status: { type: string, enum: [pending] }
+            provider: { type: string, nullable: true }
+            initiatedAt: { type: string, format: date-time }
     AuthLogoutResponse:
       type: object
       properties:
@@ -2093,6 +2274,11 @@ components:
         defaults: { type: integer }
         offset: { type: integer }
   securitySchemes:
+    SessionToken:
+      type: http
+      scheme: bearer
+      bearerFormat: CoopLumen session token
+      description: HMAC-signed session token returned by `POST /api/v1/auth/verify`.
     SessionCookie:
       type: apiKey
       in: cookie

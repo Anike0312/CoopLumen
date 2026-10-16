@@ -581,6 +581,8 @@ Indexes: `(stellar_address, created_at DESC)` for the recipient feed, `community
 
 Constraints: `notifications_type_check` on `type`, `notifications_stellar_address_format` on the recipient address, `notifications_read_at_check` (`read_at IS NULL OR read_at >= created_at`), and `notifications_title_check` (title is not blank). The last three are `NOT VALID`, so they apply to new and updated rows and leave any pre-existing row untouched.
 
+An `AFTER INSERT` trigger on `proposals` creates a `proposal_created` notification for each current (not soft-deleted) member of the proposal's community. The notification metadata contains the proposal ID, type, status, and voting deadline so clients can link the alert to the governance view. The trigger does not backfill alerts for proposals that existed before migration `025_notify_members_on_proposal.sql`.
+
 ---
 
 ### `audit_log`
