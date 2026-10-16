@@ -14,6 +14,8 @@ import { accountsRouter } from './accounts';
 import { multisigRouter } from './multisig';
 import { batchRouter } from './batch';
 import { streamRouter } from './stream';
+import { kycRouter } from './kyc';
+import { proposalRouter } from './proposals';
 import { proposalRouter } from './proposals';
 import { kycRouter } from './kyc';
 
@@ -39,5 +41,7 @@ apiRouter.use('/accounts', accountsRouter);
 apiRouter.use('/multisig', multisigRouter);
 apiRouter.use('/batch', batchRouter);
 apiRouter.use('/stream', streamRouter);
+apiRouter.use('/kyc', kycRouter);
+apiRouter.use('/proposals', proposalRouter);
 apiRouter.use('/proposals', proposalRouter);
 apiRouter.use('/kyc', kycRouter);

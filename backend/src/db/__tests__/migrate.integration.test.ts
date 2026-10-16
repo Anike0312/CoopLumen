@@ -199,6 +199,47 @@ describeIf('Migration integration', () => {
     expect(Number(rows[0].count)).toBe(1);
   });
 
+  it('re-applying the KYC activation preserves records and schema objects', async () => {
+    const communityId = '22222222-2222-4222-8222-222222222222';
+    const stellarAddress = `G${'B'.repeat(55)}`;
+    await pool.query(
+      `INSERT INTO communities
+         (id, name, issuer_public_key, asset_code, asset_issuer)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [communityId, 'KYC migration sentinel', stellarAddress, 'KYC', stellarAddress]
+    );
+    await pool.query(
+      `INSERT INTO kyc_records (community_id, stellar_address, status, metadata)
+       VALUES ($1, $2, 'pending', $3::jsonb)`,
+      [communityId, stellarAddress, JSON.stringify({ preserved: true })]
+    );
+
+    const file = path.join(__dirname, '..', 'migrations', '025_activate_kyc_records.sql');
+    const sql = await fs.readFile(file, 'utf8');
+    await pool.query(sql);
+    await pool.query(sql);
+
+    const record = await pool.query<{ status: string; metadata: { preserved: boolean } }>(
+      'SELECT status, metadata FROM kyc_records WHERE community_id = $1',
+      [communityId]
+    );
+    const constraint = await pool.query<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM pg_constraint
+        WHERE conrelid = 'kyc_records'::regclass
+          AND conname = 'kyc_records_stellar_address_format'`
+    );
+    const trigger = await pool.query<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM pg_trigger
+        WHERE tgrelid = 'kyc_records'::regclass
+          AND tgname = 'kyc_records_updated_at'
+          AND NOT tgisinternal`
+    );
+
+    expect(record.rows).toEqual([{ status: 'pending', metadata: { preserved: true } }]);
+    expect(Number(constraint.rows[0].count)).toBe(1);
+    expect(Number(trigger.rows[0].count)).toBe(1);
+  });
+
   it('fails the run when an applied migration has been edited', async () => {
     await pool.query(
       `UPDATE schema_migrations SET checksum = 'tampered' WHERE name = '001_schema_migrations.sql'`
@@ -231,6 +272,7 @@ describeIf('Migration integration', () => {
       'multisig_requests',
       'notifications',
       'payments',
+      'proposal_delegations',
       'proposals',
       'reputation_scores',
       'schema_migrations',

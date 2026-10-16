@@ -11,6 +11,13 @@ chain instead of from a backend that has to be trusted.
 
 ## Data model
 
+| Type             | Fields                                                                                                                                            |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Config`         | `admin`, `governance_token`, `voting_period` (seconds), `quorum_bps` (basis points, at most `10_000`), `total_supply`                             |
+| `Proposal`       | `proposal_id`, `proposer`, `title`, `description`, `actions: Vec<String>`, `votes_for`, `votes_against`, `status`, `created_at`, `voting_ends_at` |
+| `Vote`           | `voter`, `choice`, `weight`                                                                                                                       |
+| `ProposalStatus` | `Active`, `Passed`, `Rejected`, `Executed`                                                                                                        |
+| `VoteChoice`     | `For`, `Against`                                                                                                                                  |
 | Type                  | Fields                                                                                                                                            |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `Config`              | `admin`, `governance_token`, `voting_period` (seconds), `quorum_bps` (basis points, at most `10_000`)                                             |
@@ -37,11 +44,13 @@ nor disturbs any other proposal's record.
 
 ## Interface
 
-### `initialize(admin, governance_token, voting_period, quorum_bps)`
+### `initialize(admin, governance_token, voting_period, quorum_bps, total_supply)`
 
 Writes the singleton `Config`. Fails with `AlreadyInitialized` if the contract
-was already initialized, and with `InvalidInput` when `voting_period` is zero or
-`quorum_bps` exceeds `10_000`.
+was already initialized, and with `InvalidInput` when `voting_period` is zero,
+`quorum_bps` exceeds `10_000`, or `total_supply` is not positive. Initialization
+does not currently require authorization, so deployments must initialize
+immediately.
 
 ### `create_proposal(proposer, title, description, actions) -> u64`
 
@@ -84,6 +93,18 @@ Returns all accounts currently represented by the delegatee.
 
 Returns the active `Config`, or `NotInitialized`.
 
+### `finalize_proposal(proposal_id) -> ProposalStatus`
+
+After the voting window closes, transitions an active proposal to `Passed` when
+`votes_for > votes_against`; ties and against majorities become `Rejected`.
+
+### `execute_proposal(proposal_id, executor)`
+
+Requires `executor` auth and a passed proposal whose participation meets the
+configured quorum. The current implementation records each opaque action as a
+`prop_exec` event for an off-chain executor; it does not dispatch
+cross-contract calls.
+
 ### `get_proposal(proposal_id) -> Proposal`
 
 The read side of the contract, and the view the off-chain layers surface:
@@ -122,6 +143,22 @@ Empty collections return zero-valued rates rather than failing division.
 
 ## Errors
 
+| Code | Name                      | Raised when                                                     |
+| ---- | ------------------------- | --------------------------------------------------------------- |
+| 1    | `AlreadyInitialized`      | `initialize` is called on an initialized contract               |
+| 2    | `NotInitialized`          | Any call before `initialize`                                    |
+| 3    | `InvalidInput`            | Empty title, zero voting period, or quorum above `10_000` bps   |
+| 4    | `ProposalNotFound`        | Unknown `proposal_id`, or no vote from that voter on a proposal |
+| 5    | `ProposalNotActive`       | Voting on a proposal whose status is no longer `Active`         |
+| 6    | `VotingPeriodEnded`       | Voting after `voting_ends_at`                                   |
+| 7    | `AlreadyVoted`            | The same address voting twice on one proposal                   |
+| 8    | `NoVotingPower`           | The voter's governance-token balance is zero                    |
+| 9    | `Overflow`                | Counter or tally arithmetic overflow                            |
+| 10   | `InsufficientQuorum`      | Participation is below the configured execution threshold       |
+| 11   | `ProposalExecutionFailed` | The proposal is not in `Passed` state                           |
+
+For the complete embedded ABI and a CLI-verified deployment procedure, see
+[`docs/governance-contract.md`](../../docs/governance-contract.md).
 | Code | Name                   | Raised when                                                     |
 | ---- | ---------------------- | --------------------------------------------------------------- |
 | 1    | `AlreadyInitialized`   | `initialize` is called on an initialized contract               |
