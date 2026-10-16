@@ -1,8 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env,
-    String, Symbol, Vec,
+    contract, contracterror, contractevent, contractimpl, contracttype, symbol_short, token,
+    Address, Env, String, Symbol, Vec,
 };
 
 /// Errors returned by the CoopLumen Governance contract.
@@ -23,6 +23,14 @@ pub enum GovernanceError {
     InsufficientQuorum = 10,
     /// The proposal is not in `Passed` status and cannot be executed.
     ProposalExecutionFailed = 11,
+    /// An account cannot delegate voting power to itself.
+    CannotDelegateToSelf = 12,
+    /// Delegation is limited to one hop to prevent cycles and ambiguous power.
+    InvalidDelegation = 13,
+    /// The voter delegated their power and must revoke before voting directly.
+    VotingPowerDelegated = 14,
+    /// The account has no active delegation to revoke.
+    NoDelegation = 15,
 }
 
 /// Lifecycle status of an on-chain proposal.
@@ -82,12 +90,34 @@ pub struct Vote {
     pub weight: i128,
 }
 
+/// Aggregate governance metrics derived from on-chain proposal tallies.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovernanceAnalytics {
+    pub total_proposals: u64,
+    pub active_proposals: u64,
+    pub finalized_proposals: u64,
+    pub passed_proposals: u64,
+    pub rejected_proposals: u64,
+    pub executed_proposals: u64,
+    pub total_voting_power_cast: i128,
+    /// Average participation across every proposal, in basis points.
+    pub voter_turnout_bps: u32,
+    /// Average participation across finalized proposals, in basis points.
+    pub average_quorum_bps: u32,
+    /// Passed and executed proposals divided by finalized proposals, in basis points.
+    pub proposal_pass_rate_bps: u32,
+}
+
 /// Contract storage keys.
 #[contracttype]
 pub enum DataKey {
     Config,
     Proposal(u64),
     Vote(u64, Address),
+    VoteUsed(u64, Address),
+    Delegation(Address),
+    Delegators(Address),
     ProposalCount,
 }
 
@@ -102,6 +132,22 @@ const TOPIC_PROPOSAL_EXECUTED: Symbol = symbol_short!("prop_exec");
 /// `topics = ("execution_failed", proposal_id)`
 /// `data   = action: String`
 const TOPIC_EXECUTION_FAILED: Symbol = symbol_short!("exec_fail");
+
+/// Emitted when an account delegates its voting power.
+#[contractevent(topics = ["delegated"])]
+pub struct VotingPowerDelegatedEvent {
+    #[topic]
+    pub delegator: Address,
+    pub delegatee: Address,
+}
+
+/// Emitted when an account revokes its voting-power delegation.
+#[contractevent(topics = ["undel"])]
+pub struct VotingPowerUndelegatedEvent {
+    #[topic]
+    pub delegator: Address,
+    pub former_delegatee: Address,
+}
 
 /// On-chain Governance smart contract for CoopLumen.
 #[contract]
@@ -191,6 +237,110 @@ impl GovernanceContract {
         Ok(proposal_id)
     }
 
+    /// Delegate all current governance-token voting power to another account.
+    ///
+    /// Delegation is intentionally one hop: an account that already represents
+    /// delegators cannot delegate onward, and a delegatee cannot itself have an
+    /// active delegation. This keeps vote accounting deterministic and prevents
+    /// cycles. The token balance is read when a vote is cast, not when the
+    /// delegation is created.
+    pub fn delegate(
+        env: Env,
+        delegator: Address,
+        delegatee: Address,
+    ) -> Result<(), GovernanceError> {
+        delegator.require_auth();
+
+        let config: Config = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .ok_or(GovernanceError::NotInitialized)?;
+
+        if delegator == delegatee {
+            return Err(GovernanceError::CannotDelegateToSelf);
+        }
+
+        let token_client = token::Client::new(&env, &config.governance_token);
+        if token_client.balance(&delegator) <= 0 {
+            return Err(GovernanceError::NoVotingPower);
+        }
+
+        let inbound: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Delegators(delegator.clone()))
+            .unwrap_or(Vec::new(&env));
+        let delegatee_outbound: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Delegation(delegatee.clone()));
+
+        if !inbound.is_empty() || delegatee_outbound.is_some() {
+            return Err(GovernanceError::InvalidDelegation);
+        }
+
+        let previous: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Delegation(delegator.clone()));
+        if previous == Some(delegatee.clone()) {
+            return Ok(());
+        }
+
+        if let Some(previous_delegatee) = previous {
+            remove_delegator(&env, &previous_delegatee, &delegator);
+        }
+
+        let mut delegators: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Delegators(delegatee.clone()))
+            .unwrap_or(Vec::new(&env));
+        delegators.push_back(delegator.clone());
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Delegation(delegator.clone()), &delegatee);
+        env.storage()
+            .instance()
+            .set(&DataKey::Delegators(delegatee.clone()), &delegators);
+        VotingPowerDelegatedEvent {
+            delegator,
+            delegatee,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Revoke the caller's active voting-power delegation.
+    pub fn undelegate(env: Env, delegator: Address) -> Result<(), GovernanceError> {
+        delegator.require_auth();
+
+        if !env.storage().instance().has(&DataKey::Config) {
+            return Err(GovernanceError::NotInitialized);
+        }
+
+        let delegatee: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Delegation(delegator.clone()))
+            .ok_or(GovernanceError::NoDelegation)?;
+
+        remove_delegator(&env, &delegatee, &delegator);
+        env.storage()
+            .instance()
+            .remove(&DataKey::Delegation(delegator.clone()));
+        VotingPowerUndelegatedEvent {
+            delegator,
+            former_delegatee: delegatee,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
     /// Cast a token-weighted vote on an active proposal.
     pub fn cast_vote(
         env: Env,
@@ -206,6 +356,14 @@ impl GovernanceContract {
             .get(&DataKey::Config)
             .ok_or(GovernanceError::NotInitialized)?;
 
+        if env
+            .storage()
+            .instance()
+            .has(&DataKey::Delegation(voter.clone()))
+        {
+            return Err(GovernanceError::VotingPowerDelegated);
+        }
+
         let mut proposal: Proposal = env
             .storage()
             .instance()
@@ -220,16 +378,38 @@ impl GovernanceContract {
             return Err(GovernanceError::VotingPeriodEnded);
         }
 
-        if env
+        let token_client = token::Client::new(&env, &config.governance_token);
+        let mut represented = Vec::new(&env);
+        represented.push_back(voter.clone());
+
+        let delegators: Vec<Address> = env
             .storage()
             .instance()
-            .has(&DataKey::Vote(proposal_id, voter.clone()))
-        {
-            return Err(GovernanceError::AlreadyVoted);
+            .get(&DataKey::Delegators(voter.clone()))
+            .unwrap_or(Vec::new(&env));
+        for delegator in delegators.iter() {
+            represented.push_back(delegator);
         }
 
-        let token_client = token::Client::new(&env, &config.governance_token);
-        let weight = token_client.balance(&voter);
+        let mut weight = 0_i128;
+        for account in represented.iter() {
+            if env
+                .storage()
+                .instance()
+                .has(&DataKey::VoteUsed(proposal_id, account.clone()))
+                || env
+                    .storage()
+                    .instance()
+                    .has(&DataKey::Vote(proposal_id, account.clone()))
+            {
+                return Err(GovernanceError::AlreadyVoted);
+            }
+
+            weight = weight
+                .checked_add(token_client.balance(&account))
+                .ok_or(GovernanceError::Overflow)?;
+        }
+
         if weight <= 0 {
             return Err(GovernanceError::NoVotingPower);
         }
@@ -258,6 +438,11 @@ impl GovernanceContract {
         env.storage()
             .instance()
             .set(&DataKey::Vote(proposal_id, voter.clone()), &vote_record);
+        for account in represented.iter() {
+            env.storage()
+                .instance()
+                .set(&DataKey::VoteUsed(proposal_id, account), &true);
+        }
         env.storage()
             .instance()
             .set(&DataKey::Proposal(proposal_id), &proposal);
@@ -273,7 +458,10 @@ impl GovernanceContract {
     ///
     /// Returns `VotingPeriodEnded` if the window is still open, and
     /// `ProposalNotActive` if the proposal is already finalised.
-    pub fn finalize_proposal(env: Env, proposal_id: u64) -> Result<ProposalStatus, GovernanceError> {
+    pub fn finalize_proposal(
+        env: Env,
+        proposal_id: u64,
+    ) -> Result<ProposalStatus, GovernanceError> {
         let mut proposal: Proposal = env
             .storage()
             .instance()
@@ -400,20 +588,16 @@ impl GovernanceContract {
         for action in proposal.actions.iter() {
             // Validate the action string is non-empty before recording it.
             if action.is_empty() {
-                env.events().publish(
-                    (TOPIC_EXECUTION_FAILED, proposal_id),
-                    action.clone(),
-                );
+                env.events()
+                    .publish((TOPIC_EXECUTION_FAILED, proposal_id), action.clone());
                 continue;
             }
 
             // Emit the action for off-chain executors / indexers.
             // In a production contract this is where cross-contract calls or
             // sub-invocations keyed on the action prefix would be dispatched.
-            env.events().publish(
-                (TOPIC_PROPOSAL_EXECUTED, proposal_id),
-                action.clone(),
-            );
+            env.events()
+                .publish((TOPIC_PROPOSAL_EXECUTED, proposal_id), action.clone());
         }
 
         Ok(())
@@ -425,6 +609,112 @@ impl GovernanceContract {
             .instance()
             .get(&DataKey::Config)
             .ok_or(GovernanceError::NotInitialized)
+    }
+
+    /// Calculate aggregate governance metrics from the current on-chain state.
+    ///
+    /// Turnout includes active proposals so dashboards can reflect live
+    /// participation. Average quorum and pass rate include only finalized
+    /// proposals (`Passed`, `Rejected`, or `Executed`) so open ballots do not
+    /// distort outcome metrics. `Executed` is counted as a passed outcome.
+    pub fn get_analytics(env: Env) -> Result<GovernanceAnalytics, GovernanceError> {
+        let config: Config = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .ok_or(GovernanceError::NotInitialized)?;
+        let total_proposals: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProposalCount)
+            .unwrap_or(0);
+
+        let mut active_proposals = 0_u64;
+        let mut finalized_proposals = 0_u64;
+        let mut passed_proposals = 0_u64;
+        let mut rejected_proposals = 0_u64;
+        let mut executed_proposals = 0_u64;
+        let mut total_voting_power_cast = 0_i128;
+        let mut turnout_bps_total = 0_u64;
+        let mut finalized_quorum_bps_total = 0_u64;
+
+        let mut proposal_id = 1_u64;
+        while proposal_id <= total_proposals {
+            let proposal: Proposal = env
+                .storage()
+                .instance()
+                .get(&DataKey::Proposal(proposal_id))
+                .ok_or(GovernanceError::ProposalNotFound)?;
+            let participation = proposal
+                .votes_for
+                .checked_add(proposal.votes_against)
+                .ok_or(GovernanceError::Overflow)?;
+            total_voting_power_cast = total_voting_power_cast
+                .checked_add(participation)
+                .ok_or(GovernanceError::Overflow)?;
+
+            let participation_bps = participation_basis_points(participation, config.total_supply)?;
+            turnout_bps_total = turnout_bps_total
+                .checked_add(u64::from(participation_bps))
+                .ok_or(GovernanceError::Overflow)?;
+
+            match proposal.status {
+                ProposalStatus::Active => active_proposals += 1,
+                ProposalStatus::Passed => {
+                    finalized_proposals += 1;
+                    passed_proposals += 1;
+                    finalized_quorum_bps_total += u64::from(participation_bps);
+                }
+                ProposalStatus::Rejected => {
+                    finalized_proposals += 1;
+                    rejected_proposals += 1;
+                    finalized_quorum_bps_total += u64::from(participation_bps);
+                }
+                ProposalStatus::Executed => {
+                    finalized_proposals += 1;
+                    passed_proposals += 1;
+                    executed_proposals += 1;
+                    finalized_quorum_bps_total += u64::from(participation_bps);
+                }
+            }
+
+            proposal_id = proposal_id
+                .checked_add(1)
+                .ok_or(GovernanceError::Overflow)?;
+        }
+
+        let voter_turnout_bps = if total_proposals == 0 {
+            0
+        } else {
+            (turnout_bps_total / total_proposals) as u32
+        };
+        let average_quorum_bps = if finalized_proposals == 0 {
+            0
+        } else {
+            (finalized_quorum_bps_total / finalized_proposals) as u32
+        };
+        let proposal_pass_rate_bps = if finalized_proposals == 0 {
+            0
+        } else {
+            passed_proposals
+                .checked_mul(10_000)
+                .ok_or(GovernanceError::Overflow)?
+                .checked_div(finalized_proposals)
+                .ok_or(GovernanceError::Overflow)? as u32
+        };
+
+        Ok(GovernanceAnalytics {
+            total_proposals,
+            active_proposals,
+            finalized_proposals,
+            passed_proposals,
+            rejected_proposals,
+            executed_proposals,
+            total_voting_power_cast,
+            voter_turnout_bps,
+            average_quorum_bps,
+            proposal_pass_rate_bps,
+        })
     }
 
     /// Read a proposal by ID.
@@ -464,6 +754,65 @@ impl GovernanceContract {
             .get(&DataKey::Vote(proposal_id, voter))
             .ok_or(GovernanceError::ProposalNotFound)
     }
+
+    /// Return the account currently receiving `delegator`'s voting power.
+    pub fn get_delegation(env: Env, delegator: Address) -> Option<Address> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Delegation(delegator))
+    }
+
+    /// Return all accounts whose voting power is currently delegated to `delegatee`.
+    pub fn get_delegators(env: Env, delegatee: Address) -> Vec<Address> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Delegators(delegatee))
+            .unwrap_or(Vec::new(&env))
+    }
+}
+
+fn remove_delegator(env: &Env, delegatee: &Address, delegator: &Address) {
+    let mut delegators: Vec<Address> = env
+        .storage()
+        .instance()
+        .get(&DataKey::Delegators(delegatee.clone()))
+        .unwrap_or(Vec::new(env));
+
+    let mut index = 0_u32;
+    while index < delegators.len() {
+        if delegators.get(index) == Some(delegator.clone()) {
+            delegators.remove(index);
+            break;
+        }
+        index += 1;
+    }
+
+    if delegators.is_empty() {
+        env.storage()
+            .instance()
+            .remove(&DataKey::Delegators(delegatee.clone()));
+    } else {
+        env.storage()
+            .instance()
+            .set(&DataKey::Delegators(delegatee.clone()), &delegators);
+    }
+}
+
+fn participation_basis_points(
+    participation: i128,
+    total_supply: i128,
+) -> Result<u32, GovernanceError> {
+    let basis_points = participation
+        .checked_mul(10_000)
+        .ok_or(GovernanceError::Overflow)?
+        .checked_div(total_supply)
+        .ok_or(GovernanceError::InvalidInput)?;
+
+    Ok(if basis_points > 10_000 {
+        10_000
+    } else {
+        basis_points as u32
+    })
 }
 
 #[cfg(test)]
@@ -606,6 +955,119 @@ mod test {
         let p2 = client.get_proposal(&id);
         assert_eq!(p2.votes_for, 1000);
         assert_eq!(p2.votes_against, 500);
+    }
+
+    #[test]
+    fn test_delegatee_votes_with_current_delegated_power() {
+        let (env, _admin, _token_admin, token, client) = setup_test();
+        let proposer = Address::generate(&env);
+        let delegator = Address::generate(&env);
+        let delegatee = Address::generate(&env);
+        let sac = StellarAssetClient::new(&env, &token);
+        sac.mint(&delegator, &700);
+        sac.mint(&delegatee, &300);
+
+        client.delegate(&delegator, &delegatee);
+        sac.mint(&delegator, &100);
+
+        let id = client.create_proposal(
+            &proposer,
+            &String::from_str(&env, "Delegated ballot"),
+            &String::from_str(&env, "Count represented voting power"),
+            &vec![&env],
+        );
+        client.cast_vote(&id, &VoteChoice::For, &delegatee);
+
+        assert_eq!(client.get_delegation(&delegator), Some(delegatee.clone()));
+        assert_eq!(client.get_delegators(&delegatee), vec![&env, delegator]);
+        assert_eq!(client.get_proposal(&id).votes_for, 1_100);
+        assert_eq!(client.get_vote(&id, &delegatee).weight, 1_100);
+    }
+
+    #[test]
+    fn test_delegator_cannot_vote_until_delegation_is_revoked() {
+        let (env, _admin, _token_admin, token, client) = setup_test();
+        let proposer = Address::generate(&env);
+        let delegator = Address::generate(&env);
+        let delegatee = Address::generate(&env);
+        StellarAssetClient::new(&env, &token).mint(&delegator, &500);
+        client.delegate(&delegator, &delegatee);
+
+        let id = client.create_proposal(
+            &proposer,
+            &String::from_str(&env, "Direct ballot"),
+            &String::from_str(&env, "Revoke before direct voting"),
+            &vec![&env],
+        );
+        assert_eq!(
+            client
+                .try_cast_vote(&id, &VoteChoice::For, &delegator)
+                .unwrap_err()
+                .unwrap(),
+            GovernanceError::VotingPowerDelegated
+        );
+
+        client.undelegate(&delegator);
+        assert_eq!(client.get_delegation(&delegator), None);
+        assert!(client.get_delegators(&delegatee).is_empty());
+        client.cast_vote(&id, &VoteChoice::For, &delegator);
+        assert_eq!(client.get_proposal(&id).votes_for, 500);
+    }
+
+    #[test]
+    fn test_delegated_power_cannot_be_counted_after_direct_vote() {
+        let (env, _admin, _token_admin, token, client) = setup_test();
+        let proposer = Address::generate(&env);
+        let delegator = Address::generate(&env);
+        let delegatee = Address::generate(&env);
+        let sac = StellarAssetClient::new(&env, &token);
+        sac.mint(&delegator, &600);
+        sac.mint(&delegatee, &400);
+
+        let id = client.create_proposal(
+            &proposer,
+            &String::from_str(&env, "No double count"),
+            &String::from_str(&env, "One balance, one ballot"),
+            &vec![&env],
+        );
+        client.cast_vote(&id, &VoteChoice::For, &delegator);
+        client.delegate(&delegator, &delegatee);
+
+        assert_eq!(
+            client
+                .try_cast_vote(&id, &VoteChoice::For, &delegatee)
+                .unwrap_err()
+                .unwrap(),
+            GovernanceError::AlreadyVoted
+        );
+        assert_eq!(client.get_proposal(&id).votes_for, 600);
+    }
+
+    #[test]
+    fn test_delegation_rejects_self_and_multi_hop_chains() {
+        let (env, _admin, _token_admin, token, client) = setup_test();
+        let first = Address::generate(&env);
+        let second = Address::generate(&env);
+        let third = Address::generate(&env);
+        let sac = StellarAssetClient::new(&env, &token);
+        sac.mint(&first, &100);
+        sac.mint(&second, &100);
+        sac.mint(&third, &100);
+
+        assert_eq!(
+            client.try_delegate(&first, &first).unwrap_err().unwrap(),
+            GovernanceError::CannotDelegateToSelf
+        );
+
+        client.delegate(&first, &second);
+        assert_eq!(
+            client.try_delegate(&second, &third).unwrap_err().unwrap(),
+            GovernanceError::InvalidDelegation
+        );
+        assert_eq!(
+            client.try_delegate(&third, &first).unwrap_err().unwrap(),
+            GovernanceError::InvalidDelegation
+        );
     }
 
     #[test]
@@ -807,10 +1269,7 @@ mod test {
         env.ledger().set_timestamp(1_086_401);
         client.finalize_proposal(&id);
 
-        assert_eq!(
-            client.get_proposal(&id).status,
-            ProposalStatus::Rejected
-        );
+        assert_eq!(client.get_proposal(&id).status, ProposalStatus::Rejected);
 
         let err = client
             .try_execute_proposal(&id, &executor)
@@ -1048,5 +1507,93 @@ mod test {
         assert_eq!(after_for.votes_for, 750);
         assert_eq!(after_for.votes_against, 250);
         assert_eq!(after_for.status, ProposalStatus::Active);
+    }
+
+    #[test]
+    fn test_governance_analytics_are_zero_safe() {
+        let (_env, _admin, _token_admin, _token, client) = setup_test();
+
+        assert_eq!(
+            client.get_analytics(),
+            GovernanceAnalytics {
+                total_proposals: 0,
+                active_proposals: 0,
+                finalized_proposals: 0,
+                passed_proposals: 0,
+                rejected_proposals: 0,
+                executed_proposals: 0,
+                total_voting_power_cast: 0,
+                voter_turnout_bps: 0,
+                average_quorum_bps: 0,
+                proposal_pass_rate_bps: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn test_governance_analytics_report_turnout_quorum_and_pass_rate() {
+        let (env, _admin, _token_admin, token, client) = setup_test();
+        let proposer = Address::generate(&env);
+        let voter_for = Address::generate(&env);
+        let voter_against = Address::generate(&env);
+        let active_voter = Address::generate(&env);
+        let sac = StellarAssetClient::new(&env, &token);
+        sac.mint(&voter_for, &6_000);
+        sac.mint(&voter_against, &2_000);
+        sac.mint(&active_voter, &1_000);
+
+        let passed_id = client.create_proposal(
+            &proposer,
+            &String::from_str(&env, "Passed"),
+            &String::from_str(&env, "Sixty percent turnout"),
+            &vec![&env],
+        );
+        let rejected_id = client.create_proposal(
+            &proposer,
+            &String::from_str(&env, "Rejected"),
+            &String::from_str(&env, "Twenty percent turnout"),
+            &vec![&env],
+        );
+        let active_id = client.create_proposal(
+            &proposer,
+            &String::from_str(&env, "Active"),
+            &String::from_str(&env, "Ten percent live turnout"),
+            &vec![&env],
+        );
+
+        client.cast_vote(&passed_id, &VoteChoice::For, &voter_for);
+        client.cast_vote(&rejected_id, &VoteChoice::Against, &voter_against);
+        client.cast_vote(&active_id, &VoteChoice::For, &active_voter);
+
+        env.ledger().set_timestamp(1_086_401);
+        client.finalize_proposal(&passed_id);
+        client.finalize_proposal(&rejected_id);
+
+        let analytics = client.get_analytics();
+        assert_eq!(analytics.total_proposals, 3);
+        assert_eq!(analytics.active_proposals, 1);
+        assert_eq!(analytics.finalized_proposals, 2);
+        assert_eq!(analytics.passed_proposals, 1);
+        assert_eq!(analytics.rejected_proposals, 1);
+        assert_eq!(analytics.executed_proposals, 0);
+        assert_eq!(analytics.total_voting_power_cast, 9_000);
+        assert_eq!(analytics.voter_turnout_bps, 3_000);
+        assert_eq!(analytics.average_quorum_bps, 4_000);
+        assert_eq!(analytics.proposal_pass_rate_bps, 5_000);
+    }
+
+    #[test]
+    fn test_governance_analytics_count_executed_as_passed() {
+        let (env, _admin, _token_admin, token, client) = setup_test();
+        let executor = Address::generate(&env);
+        let (proposal_id, _) = create_and_finalize(&env, &client, &token, 6_000);
+        client.execute_proposal(&proposal_id, &executor);
+
+        let analytics = client.get_analytics();
+        assert_eq!(analytics.finalized_proposals, 1);
+        assert_eq!(analytics.passed_proposals, 1);
+        assert_eq!(analytics.executed_proposals, 1);
+        assert_eq!(analytics.average_quorum_bps, 6_000);
+        assert_eq!(analytics.proposal_pass_rate_bps, 10_000);
     }
 }

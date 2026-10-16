@@ -35,7 +35,7 @@ tags:
   - name: Fees
     description: Stellar network fee estimation
   - name: Webhooks
-    description: Inbound webhook endpoints for Stellar account/transaction event notifications
+    description: Signed inbound callbacks for Stellar events and third-party KYC status updates
   - name: BatchPayments
     description: Batch payment disbursement, preview, and CSV parsing endpoints
   - name: Stream
@@ -657,6 +657,11 @@ paths:
     post:
       tags: [Transactions]
       summary: Submit a signed Stellar payment transaction
+      description: >
+        Validates and submits a signed single-payment transaction. Community-token
+        transfers from accounts without a verified KYC record are limited to a
+        cumulative 100 tokens per UTC day. The source, asset, and amount are read
+        from the signed XDR rather than trusted from separate request fields.
       requestBody:
         required: true
         content:
@@ -677,6 +682,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/InsufficientBalanceResponse'
+        '403':
+          description: The transfer would exceed the unverified account's daily token limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailyTransactionLimitResponse'
         '422':
           description: The Stellar network rejected the signed transaction
           content:
@@ -738,6 +749,53 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
           description: The server has no webhook secret configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/webhooks/kyc:
+    post:
+      tags: [Webhooks]
+      summary: Receive a third-party KYC verification status callback
+      description: >
+        Authenticates a provider-neutral KYC callback using an HMAC-SHA256
+        signature over the exact request bytes, then creates or updates the
+        community-scoped KYC record for the supplied Stellar address.
+      parameters:
+        - name: X-KYC-Webhook-Signature
+          in: header
+          required: true
+          description: Hex-encoded HMAC-SHA256 digest keyed with KYC_WEBHOOK_SECRET.
+          schema: { type: string, pattern: '^[0-9a-fA-F]{64}$' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KycWebhookPayload'
+      responses:
+        '200':
+          description: KYC status accepted and persisted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KycWebhookResponse'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401':
+          description: Missing or invalid webhook signature
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The referenced community does not exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The server has no KYC webhook secret configured
           content:
             application/json:
               schema:
@@ -1849,6 +1907,47 @@ components:
         data:
           type: object
           additionalProperties: true
+    KycWebhookPayload:
+      type: object
+      required:
+        [eventId, provider, providerReference, communityId, stellarAddress, status, occurredAt]
+      properties:
+        eventId: { type: string, minLength: 1, maxLength: 200 }
+        provider: { type: string, minLength: 1, maxLength: 100 }
+        providerReference: { type: string, minLength: 1, maxLength: 200 }
+        communityId: { type: string, format: uuid }
+        stellarAddress: { $ref: '#/components/schemas/StellarKey' }
+        status:
+          type: string
+          enum: [pending, submitted, verified, rejected, expired]
+        occurredAt: { type: string, format: date-time }
+        rejectionReason:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: Required when status is rejected.
+        metadata:
+          type: object
+          additionalProperties: true
+          default: {}
+    KycWebhookResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [received, eventId, recordId, status, verifiedAt]
+          properties:
+            received: { type: boolean, example: true }
+            eventId: { type: string }
+            recordId: { type: string, format: uuid }
+            status:
+              type: string
+              enum: [pending, submitted, verified, rejected, expired]
+            verifiedAt:
+              type: string
+              format: date-time
+              nullable: true
     TokenTransferRequest:
       type: object
       required: [signedXdr]
@@ -1987,6 +2086,32 @@ components:
           nullable: true
         error:
           $ref: '#/components/schemas/InsufficientBalanceError'
+    DailyTransactionLimitError:
+      type: object
+      required: [code, message, limit, dailyTotal, attemptedAmount]
+      properties:
+        code:
+          type: string
+          enum: [UNVERIFIED_DAILY_LIMIT_EXCEEDED]
+        message:
+          type: string
+        limit:
+          type: string
+          example: '100.0000000'
+        dailyTotal:
+          type: string
+          example: '80.0000000'
+        attemptedAmount:
+          type: string
+          example: '25.0000000'
+    DailyTransactionLimitResponse:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          nullable: true
+        error:
+          $ref: '#/components/schemas/DailyTransactionLimitError'
     Token:
       type: object
       properties:

@@ -28,6 +28,16 @@ jest.mock('../../../utils/logger', () => ({
   },
 }));
 
+jest.mock('../../../services/compliance', () => {
+  const actual = jest.requireActual('../../../services/compliance');
+  return {
+    ...actual,
+    reserveUnverifiedTransfer: jest.fn(),
+    markTransferSubmitted: jest.fn(),
+    markTransferFailed: jest.fn(),
+  };
+});
+
 jest.mock('@stellar/stellar-sdk', () => ({
   ...jest.requireActual('@stellar/stellar-sdk'),
   TransactionBuilder: {
@@ -39,6 +49,12 @@ jest.mock('@stellar/stellar-sdk', () => ({
 import app from '../../../app';
 import { redisCache } from '../../../cache/redis';
 import { StellarService } from '../../../contracts/stellar';
+import {
+  DailyTransactionLimitError,
+  markTransferFailed,
+  markTransferSubmitted,
+  reserveUnverifiedTransfer,
+} from '../../../services/compliance';
 
 const mockFromXDR = TransactionBuilder.fromXDR as jest.Mock;
 const sourcePublicKey = 'G' + 'A'.repeat(55);
@@ -63,6 +79,9 @@ function runTimeoutsImmediately(): jest.SpyInstance {
 describe('POST /api/v1/tokens/transfer', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    (reserveUnverifiedTransfer as jest.Mock).mockResolvedValue(null);
+    (markTransferSubmitted as jest.Mock).mockResolvedValue(undefined);
+    (markTransferFailed as jest.Mock).mockResolvedValue(undefined);
     process.env.REDIS_URL = 'redis://cache.test:6379';
     mockRedisClient.connect.mockResolvedValue(undefined);
     mockRedisClient.get.mockResolvedValue(null);
@@ -136,6 +155,84 @@ describe('POST /api/v1/tokens/transfer', () => {
     expect(response.body).toEqual({ data: { txHash: 'tx-hash-1' } });
     expect(mockRedisClient.del).toHaveBeenCalledWith(`balances:${sourcePublicKey}`);
     expect(mockRedisClient.del).toHaveBeenCalledWith(`balances:${destinationPublicKey}`);
+  });
+
+  it('rejects a community-token transfer that exceeds the unverified daily limit', async () => {
+    const transaction = {
+      fee: 100,
+      source: sourcePublicKey,
+      operations: [
+        {
+          type: 'payment',
+          destination: destinationPublicKey,
+          asset: {
+            isNative: (): boolean => false,
+            code: 'COOP',
+            issuer: `G${'C'.repeat(55)}`,
+          },
+          amount: '25.0000000',
+        },
+      ],
+    };
+    mockFromXDR.mockReturnValueOnce(transaction);
+    (reserveUnverifiedTransfer as jest.Mock).mockRejectedValueOnce(
+      new DailyTransactionLimitError('80.0000000', '25.0000000')
+    );
+    const submitTransaction = jest.fn();
+    setMockServer({ submitTransaction });
+
+    const response = await request(app).post('/api/v1/tokens/transfer').send({ signedXdr: 'AAAA' });
+
+    expect(response.status).toBe(403);
+    expect(response.body).toEqual({
+      data: null,
+      error: {
+        code: 'UNVERIFIED_DAILY_LIMIT_EXCEEDED',
+        message: 'Unverified accounts may transfer at most 100 tokens per UTC day.',
+        limit: '100.0000000',
+        dailyTotal: '80.0000000',
+        attemptedAmount: '25.0000000',
+      },
+    });
+    expect(reserveUnverifiedTransfer).toHaveBeenCalledWith({
+      stellarAddress: sourcePublicKey,
+      assetCode: 'COOP',
+      assetIssuer: `G${'C'.repeat(55)}`,
+      amount: '25.0000000',
+    });
+    expect(submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it('finalizes a daily-limit reservation after a successful community-token transfer', async () => {
+    const transaction = {
+      fee: 100,
+      source: sourcePublicKey,
+      operations: [
+        {
+          type: 'payment',
+          destination: destinationPublicKey,
+          asset: {
+            isNative: (): boolean => false,
+            code: 'COOP',
+            issuer: `G${'C'.repeat(55)}`,
+          },
+          amount: '20.0000000',
+        },
+      ],
+    };
+    mockFromXDR.mockReturnValueOnce(transaction);
+    (reserveUnverifiedTransfer as jest.Mock).mockResolvedValueOnce({
+      id: 'reservation-id',
+      communityId: 'community-id',
+    });
+    const submitTransaction = jest.fn().mockResolvedValueOnce({ hash: 'tx-hash-limited' });
+    setMockServer({ submitTransaction });
+
+    const response = await request(app).post('/api/v1/tokens/transfer').send({ signedXdr: 'AAAA' });
+
+    expect(response.status).toBe(200);
+    expect(markTransferSubmitted).toHaveBeenCalledWith('reservation-id', 'tx-hash-limited');
+    expect(markTransferFailed).not.toHaveBeenCalled();
   });
 
   it('maps tx_insufficient_balance to HTTP 402 with requiredXlm and currentBalance', async () => {

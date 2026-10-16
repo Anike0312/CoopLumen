@@ -179,14 +179,16 @@ You will need a local PostgreSQL instance. Set `DATABASE_URL` in `backend/.env`.
 
 ### Backend (`backend/.env`)
 
-| Variable              | Default                 | Description                  |
-| --------------------- | ----------------------- | ---------------------------- |
-| `PORT`                | `4000`                  | API server port              |
-| `DATABASE_URL`        | —                       | PostgreSQL connection string |
-| `STELLAR_NETWORK`     | `testnet`               | `testnet` or `mainnet`       |
-| `STELLAR_HORIZON_URL` | Testnet Horizon         | Override Horizon endpoint    |
-| `FRONTEND_URL`        | `http://localhost:3000` | CORS allowed origin          |
-| `LOG_LEVEL`           | `info`                  | winston log level            |
+| Variable                 | Default                 | Description                            |
+| ------------------------ | ----------------------- | -------------------------------------- |
+| `PORT`                   | `4000`                  | API server port                        |
+| `DATABASE_URL`           | —                       | PostgreSQL connection string           |
+| `STELLAR_NETWORK`        | `testnet`               | `testnet` or `mainnet`                 |
+| `STELLAR_HORIZON_URL`    | Testnet Horizon         | Override Horizon endpoint              |
+| `STELLAR_WEBHOOK_SECRET` | -                       | HMAC secret for Stellar callbacks      |
+| `KYC_WEBHOOK_SECRET`     | -                       | HMAC secret for KYC provider callbacks |
+| `FRONTEND_URL`           | `http://localhost:3000` | CORS allowed origin                    |
+| `LOG_LEVEL`              | `info`                  | winston log level                      |
 
 ### Frontend (`frontend/.env.local`)
 

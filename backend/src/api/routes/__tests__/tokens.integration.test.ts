@@ -31,6 +31,16 @@ jest.mock('../../../utils/logger', () => ({
   },
 }));
 
+jest.mock('../../../services/compliance', () => {
+  const actual = jest.requireActual('../../../services/compliance');
+  return {
+    ...actual,
+    reserveUnverifiedTransfer: jest.fn().mockResolvedValue(null),
+    markTransferSubmitted: jest.fn().mockResolvedValue(undefined),
+    markTransferFailed: jest.fn().mockResolvedValue(undefined),
+  };
+});
+
 jest.mock('@stellar/stellar-sdk', () => ({
   ...jest.requireActual('@stellar/stellar-sdk'),
   TransactionBuilder: {

@@ -22,6 +22,15 @@ import { isValidStellarPublicKey } from '../utils/stellar';
 import { mapHorizonError } from '../utils/horizonError';
 import { parsePagination, pageMeta, parseSort } from '../utils/http';
 import {
+  DailyTransactionLimitError,
+  markTransferFailed,
+  markTransferSubmitted,
+  reserveUnverifiedTransfer,
+  UNVERIFIED_DAILY_LIMIT,
+} from '../../services/compliance';
+import type { TransferReservation } from '../../services/compliance';
+import { logger } from '../../utils/logger';
+import {
   getNativeBalance,
   getRequiredXlmForTransaction,
   getTransactionDestination,
@@ -410,15 +419,73 @@ tokenRouter.post('/transfer', async (req: Request, res: Response): Promise<void>
     return;
   }
 
+  const payment = transaction.operations[0];
+  const sourcePublicKey = getTransactionSource(transaction);
+  if (!sourcePublicKey) {
+    res
+      .status(400)
+      .json({ data: null, error: 'The signed transaction must have a source account.' });
+    return;
+  }
+
+  let reservation: TransferReservation | null = null;
+  if (!payment.asset.isNative()) {
+    try {
+      reservation = await reserveUnverifiedTransfer({
+        stellarAddress: sourcePublicKey,
+        assetCode: payment.asset.code,
+        assetIssuer: payment.asset.issuer,
+        amount: payment.amount,
+      });
+    } catch (error) {
+      if (error instanceof DailyTransactionLimitError) {
+        res.status(403).json({
+          data: null,
+          error: {
+            code: error.code,
+            message: error.message,
+            limit: UNVERIFIED_DAILY_LIMIT,
+            dailyTotal: error.dailyTotal,
+            attemptedAmount: error.attemptedAmount,
+          },
+        });
+        return;
+      }
+      logger.error('Failed to evaluate compliance transfer limit', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      res.status(500).json({ data: null, error: 'Unable to evaluate transaction limits.' });
+      return;
+    }
+  }
+
   try {
     const result = await StellarService.submitTransaction(transaction);
-    await invalidateBalanceCache([
-      getTransactionSource(transaction),
-      getTransactionDestination(transaction),
-    ]);
+    if (reservation) {
+      try {
+        await markTransferSubmitted(reservation.id, result.hash);
+      } catch (error) {
+        logger.error('Failed to finalize compliance transfer reservation', {
+          reservationId: reservation.id,
+          txHash: result.hash,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    await invalidateBalanceCache([sourcePublicKey, getTransactionDestination(transaction)]);
     res.status(200).json({ data: { txHash: result.hash } });
   } catch (error) {
-    const sourcePublicKey = getTransactionSource(transaction);
+    if (reservation) {
+      try {
+        await markTransferFailed(reservation.id);
+      } catch (reservationError) {
+        logger.error('Failed to release compliance transfer reservation', {
+          reservationId: reservation.id,
+          error:
+            reservationError instanceof Error ? reservationError.message : String(reservationError),
+        });
+      }
+    }
     const account =
       sourcePublicKey !== undefined
         ? await StellarService.loadAccount(sourcePublicKey).catch(() => null)

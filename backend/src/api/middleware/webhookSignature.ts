@@ -3,6 +3,7 @@ import { Request, Response, NextFunction } from 'express';
 import { logger } from '../../utils/logger';
 
 export const STELLAR_WEBHOOK_SIGNATURE_HEADER = 'x-stellar-webhook-signature';
+export const KYC_WEBHOOK_SIGNATURE_HEADER = 'x-kyc-webhook-signature';
 
 interface RequestWithRawBody extends Request {
   rawBody?: Buffer;
@@ -40,47 +41,64 @@ function signaturesMatch(expected: string, provided: string): boolean {
  * app.ts — it verifies over the exact bytes received, not a re-serialized
  * copy of the parsed body.
  */
-export function verifyWebhookSignature(req: Request, res: Response, next: NextFunction): void {
-  const secret = process.env.STELLAR_WEBHOOK_SECRET;
-  if (!secret) {
-    logger.error('STELLAR_WEBHOOK_SECRET is not configured; rejecting webhook request');
-    res.status(503).json({
-      data: null,
-      error: 'Webhook signature verification is not configured on this server.',
-    });
-    return;
-  }
+function createWebhookSignatureVerifier(
+  secretEnvironmentVariable: string,
+  signatureHeaderName: string
+) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const secret = process.env[secretEnvironmentVariable];
+    if (!secret) {
+      logger.error(`${secretEnvironmentVariable} is not configured; rejecting webhook request`);
+      res.status(503).json({
+        data: null,
+        error: 'Webhook signature verification is not configured on this server.',
+      });
+      return;
+    }
 
-  const signatureHeader = req.header(STELLAR_WEBHOOK_SIGNATURE_HEADER);
-  if (!signatureHeader) {
-    res.status(401).json({
-      data: null,
-      error: `Missing ${STELLAR_WEBHOOK_SIGNATURE_HEADER} header.`,
-    });
-    return;
-  }
+    const signatureHeader = req.header(signatureHeaderName);
+    if (!signatureHeader) {
+      res.status(401).json({
+        data: null,
+        error: `Missing ${signatureHeaderName} header.`,
+      });
+      return;
+    }
 
-  const rawBody = (req as RequestWithRawBody).rawBody;
-  if (!rawBody) {
-    logger.error('Webhook signature check ran without a captured raw request body');
-    res.status(500).json({ data: null, error: 'Unable to verify webhook signature.' });
-    return;
-  }
+    const rawBody = (req as RequestWithRawBody).rawBody;
+    if (!rawBody) {
+      logger.error('Webhook signature check ran without a captured raw request body');
+      res.status(500).json({ data: null, error: 'Unable to verify webhook signature.' });
+      return;
+    }
 
-  const expectedSignature = computeSignature(secret, rawBody);
+    const expectedSignature = computeSignature(secret, rawBody);
 
-  let isValid: boolean;
-  try {
-    isValid = signaturesMatch(expectedSignature, signatureHeader);
-  } catch {
-    isValid = false;
-  }
+    let isValid: boolean;
+    try {
+      isValid = signaturesMatch(expectedSignature, signatureHeader);
+    } catch {
+      isValid = false;
+    }
 
-  if (!isValid) {
-    logger.warn('Rejected webhook request with an invalid signature');
-    res.status(401).json({ data: null, error: 'Invalid webhook signature.' });
-    return;
-  }
+    if (!isValid) {
+      logger.warn('Rejected webhook request with an invalid signature', {
+        signatureHeaderName,
+      });
+      res.status(401).json({ data: null, error: 'Invalid webhook signature.' });
+      return;
+    }
 
-  next();
+    next();
+  };
 }
+
+export const verifyWebhookSignature = createWebhookSignatureVerifier(
+  'STELLAR_WEBHOOK_SECRET',
+  STELLAR_WEBHOOK_SIGNATURE_HEADER
+);
+
+export const verifyKycWebhookSignature = createWebhookSignatureVerifier(
+  'KYC_WEBHOOK_SECRET',
+  KYC_WEBHOOK_SIGNATURE_HEADER
+);
