@@ -9,6 +9,7 @@ import { Alert } from '@/components/ui/Alert';
 import { StellarAddress } from '@/components/ui/StellarAddress';
 import { MemberList } from '@/components/community/MemberList';
 import styles from './CommunityDetailPage.module.css';
+import { sanitizeUserText } from '@/lib/sanitize';
 
 interface Props {
   /** The community ID extracted from the dynamic route segment. */
@@ -94,7 +95,7 @@ export function CommunityDetailPage({ communityId }: Props) {
               <div className={styles.heroCard}>
                 {/* Heading + token badge */}
                 <div className={styles.heroHeader}>
-                  <h1 className={styles.communityName}>{community.name}</h1>
+                  <h1 className={styles.communityName}>{sanitizeUserText(community.name)}</h1>
                   <span className={styles.assetBadge} aria-label={`Token: ${community.asset_code}`}>
                     {community.asset_code}
                   </span>
@@ -102,7 +103,7 @@ export function CommunityDetailPage({ communityId }: Props) {
 
                 {/* Optional description */}
                 {community.description && (
-                  <p className={styles.description}>{community.description}</p>
+                  <p className={styles.description}>{sanitizeUserText(community.description)}</p>
                 )}
 
                 {/* Key stats */}

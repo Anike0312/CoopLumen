@@ -58,8 +58,15 @@ export function verifySessionToken(token: string): SessionPayload | null {
 
   try {
     const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as SessionPayload;
-    if (typeof payload.address !== 'string' || typeof payload.exp !== 'number') return null;
-    if (payload.exp < Math.floor(Date.now() / 1000)) return null;
+    if (
+      typeof payload.address !== 'string' ||
+      typeof payload.iat !== 'number' ||
+      typeof payload.exp !== 'number'
+    ) return null;
+    const now = Math.floor(Date.now() / 1000);
+    if (payload.exp < now || payload.iat > now + 30 || payload.exp - payload.iat > DEFAULT_TTL_SECONDS) {
+      return null;
+    }
     return payload;
   } catch {
     return null;

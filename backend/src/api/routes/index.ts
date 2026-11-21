@@ -16,6 +16,7 @@ import { batchRouter } from './batch';
 import { streamRouter } from './stream';
 import { kycRouter } from './kyc';
 import { apiKeysRouter } from './apiKeys';
+import { accountRouter } from './account';
 import { proposalRouter } from './proposals';
 import {
   apiLimiter,
@@ -59,4 +60,5 @@ apiRouter.use('/batch', batchRouter);
 apiRouter.use('/stream', streamRouter);
 apiRouter.use('/kyc', kycRouter);
 apiRouter.use('/api-keys', apiKeysRouter);
+apiRouter.use('/account', accountRouter);
 apiRouter.use('/proposals', proposalRouter);

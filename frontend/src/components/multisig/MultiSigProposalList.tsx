@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/Button';
 import { ProgressBar } from '@/components/ui/ProgressBar';
 import { StellarAddress } from '@/components/ui/StellarAddress';
 import styles from './MultiSigProposalList.module.css';
+import { sanitizeUserText } from '@/lib/sanitize';
 
 export type ProposalStatus = 'pending' | 'executed' | 'rejected';
 
@@ -165,9 +166,11 @@ export function MultiSigProposalList({
                 >
                   <div className={styles.cardHeader}>
                     <div>
-                      <h3 className={styles.cardTitle}>{proposal.title}</h3>
+                      <h3 className={styles.cardTitle}>{sanitizeUserText(proposal.title)}</h3>
                       {proposal.description && (
-                        <p className={styles.description}>{proposal.description}</p>
+                        <p className={styles.description}>
+                          {sanitizeUserText(proposal.description)}
+                        </p>
                       )}
                     </div>
                     <Badge variant={getStatusBadgeVariant(proposal.status)}>
