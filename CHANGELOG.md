@@ -11,6 +11,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Hashed developer API keys with management endpoints and `X-API-Key` authentication, a restrictive browser `Permissions-Policy`, and finalized idempotent loan repayment schema activation (#436, #437, #438, #449).
+
 - Playwright end-to-end suite for the frontend (`frontend/e2e/`): shared fixtures that sign the browser's API requests, a gateway that serves the app and the API from one origin, and specs covering the public pages, community registration and the governance flow (#389, #311).
 - Playwright configuration (`frontend/playwright.config.ts`) with an HTML report, failure traces and screenshots, plus an `e2e` CI job that boots the Docker Compose stack, runs the suite on every pull request and uploads the report as an artifact (#389, #311).
 - `docs/testing.md` describing the three test layers, how to run the end-to-end suite locally and how to write a spec (#389, #311).

@@ -3,6 +3,7 @@ import { db } from '../../db';
 import { verifySessionToken } from '../utils/sessionToken';
 import { readAuthCookie } from '../utils/authCookie';
 import { logger } from '../../utils/logger';
+import { authenticateApiKey } from '../utils/apiKey';
 
 export interface AuthContext {
   /** The Stellar address that proved control of its key via /api/v1/auth/verify. */
@@ -26,7 +27,18 @@ declare global {
  * token is never echoed. On success, `req.auth.address` is the authenticated
  * Stellar address.
  */
-export function requireAuth(req: Request, res: Response, next: NextFunction): void {
+export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
+  const apiKey = req.header('x-api-key');
+  if (apiKey) {
+    const address = await authenticateApiKey(apiKey);
+    if (!address) {
+      res.status(401).json({ data: null, error: 'Invalid or expired API key' });
+      return;
+    }
+    req.auth = { address };
+    next();
+    return;
+  }
   const cookieToken = readAuthCookie(req);
   const header = req.headers.authorization;
   const token = cookieToken ?? (header?.startsWith('Bearer ') ? header.slice(7) : null);

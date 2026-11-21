@@ -416,6 +416,19 @@ A P2P loan between two community members, tracked off-chain. Base columns are cr
 
 Status enum (`loans_status_check`): `pending \| active \| repaid \| defaulted \| cancelled`.
 
+### `loan_repayments`
+
+Immutable repayment records activated by migration `026_activate_loans_and_repayments.sql`.
+Each row references a loan with `ON DELETE CASCADE`, records the payer, positive fixed-point
+amount, optional unique Stellar transaction hash, payment time, and JSON metadata. Existing
+`loan_events` repayment entries are backfilled idempotently using their event UUID.
+
+### `api_keys`
+
+Developer credentials are stored only as SHA-256 hashes. Rows bind a display name and key
+prefix to the owning Stellar address and support expiry, last-use tracking, and revocation.
+The raw key is returned once at creation and cannot be recovered from the database.
+
 Indexes: `community_id`, `borrower_address`, `lender_address`, and `status`.
 
 ---
