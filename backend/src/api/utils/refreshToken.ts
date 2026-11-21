@@ -93,3 +93,10 @@ export function readRefreshCookie(req: Request): string | null {
 export function resetRefreshTokens(): void {
   refreshTokens.clear();
 }
+
+/** Invalidates all browser refresh sessions owned by an erased account. */
+export function revokeRefreshTokensForAddress(address: string): void {
+  for (const [key, entry] of refreshTokens) {
+    if (entry.address === address) refreshTokens.delete(key);
+  }
+}

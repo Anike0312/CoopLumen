@@ -9,6 +9,7 @@ import { communityWriteLimiter } from './api/middleware/rateLimit';
 import { csrfProtection } from './api/middleware/csrf';
 import { db } from './db';
 import { StellarService } from './contracts/stellar';
+import { auditStateChange } from './api/middleware/auditLog';
 
 const app: Application = express();
 
@@ -44,6 +45,7 @@ app.use((req, res, next) => {
   parser(req, res, next);
 });
 app.use(requestLogger);
+app.use(auditStateChange);
 
 const healthHandler = (_req: Request, res: Response, next: NextFunction): void => {
   Promise.allSettled([db.ping(), StellarService.ping()])
