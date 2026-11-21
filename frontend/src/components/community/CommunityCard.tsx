@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import type { Community } from '@/hooks/useCommunities';
 import styles from './CommunityCard.module.css';
+import { sanitizeUserText } from '@/lib/sanitize';
 
 /**
  * A community as rendered on the discovery page: the API shape plus the
@@ -41,11 +42,13 @@ export function CommunityCard({ community, onJoin }: Props): React.JSX.Element {
 
       <div className={styles.content}>
         <div className={styles.header}>
-          <h3 className={styles.name}>{community.name}</h3>
+          <h3 className={styles.name}>{sanitizeUserText(community.name)}</h3>
           <span className={styles.token}>{community.asset_code}</span>
         </div>
 
-        {community.description && <p className={styles.description}>{community.description}</p>}
+        {community.description && (
+          <p className={styles.description}>{sanitizeUserText(community.description)}</p>
+        )}
 
         <div className={styles.meta}>
           <span>Issuer: {community.issuer_public_key.slice(0, 8)}…</span>

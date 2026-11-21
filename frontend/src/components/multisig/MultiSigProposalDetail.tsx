@@ -10,6 +10,7 @@ import { Alert } from '../ui/Alert';
 import { Table } from '../ui/Table';
 import type { MultiSigRequest, MultiSigSignerStatus } from '@/hooks/useMultiSig';
 import styles from './MultiSigProposalDetail.module.css';
+import { sanitizeUserText } from '@/lib/sanitize';
 
 export interface MultiSigProposalDetailProps {
   request: MultiSigRequest;
@@ -110,7 +111,7 @@ export function MultiSigProposalDetail({
     <Card className={[styles.container, className].filter(Boolean).join(' ')}>
       <div className={styles.header}>
         <div className={styles.titleGroup}>
-          <h2 className={styles.title}>{request.title}</h2>
+          <h2 className={styles.title}>{sanitizeUserText(request.title)}</h2>
           <div className={styles.badgeGroup}>
             <Badge variant="neutral" size="sm">
               {formatActionLabel(request.action)}
@@ -122,7 +123,9 @@ export function MultiSigProposalDetail({
         </div>
       </div>
 
-      {request.description && <p className={styles.description}>{request.description}</p>}
+      {request.description && (
+        <p className={styles.description}>{sanitizeUserText(request.description)}</p>
+      )}
 
       {error && <Alert variant="error">{error}</Alert>}
       {isRejected && request.rejection_reason && (

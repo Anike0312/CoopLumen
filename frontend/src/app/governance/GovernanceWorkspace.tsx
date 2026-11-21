@@ -3,6 +3,7 @@
 import { FormEvent, useState } from 'react';
 import { api } from '@/lib/api';
 import styles from './governance.module.css';
+import { sanitizeUserText } from '@/lib/sanitize';
 
 type VoteChoice = 'for' | 'against' | 'abstain';
 
@@ -124,11 +125,13 @@ export function GovernanceWorkspace({ initialCommunityId }: { initialCommunityId
             <div className={styles.proposalHeader}>
               <div>
                 <p className={styles.eyebrow}>Active ballot</p>
-                <h2 id="active-proposal-title">{proposal.title}</h2>
+                <h2 id="active-proposal-title">{sanitizeUserText(proposal.title)}</h2>
               </div>
               <span className={styles.status}>{proposal.status}</span>
             </div>
-            {proposal.description && <p className={styles.description}>{proposal.description}</p>}
+            {proposal.description && (
+              <p className={styles.description}>{sanitizeUserText(proposal.description)}</p>
+            )}
 
             <dl className={styles.tally} aria-label="Live vote tally">
               <div>

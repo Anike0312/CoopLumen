@@ -2,6 +2,7 @@
 
 import type { Token } from '@/hooks/useTokens';
 import styles from './TokenCard.module.css';
+import { sanitizeUserText } from '@/lib/sanitize';
 
 interface Props {
   token: Token;
@@ -37,10 +38,12 @@ export function TokenCard({ token }: Props) {
     <article className={styles.card}>
       <div className={styles.header}>
         <span className={styles.code}>{token.asset_code}</span>
-        {token.name && <span className={styles.name}>{token.name}</span>}
+        {token.name && <span className={styles.name}>{sanitizeUserText(token.name)}</span>}
       </div>
 
-      {token.description && <p className={styles.description}>{token.description}</p>}
+      {token.description && (
+        <p className={styles.description}>{sanitizeUserText(token.description)}</p>
+      )}
 
       <div className={styles.supply}>
         <span className={styles.supplyValue}>
